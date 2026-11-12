@@ -1,0 +1,38 @@
+# Secretos
+.env
+.env.*
+!.env.example
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Bases vectoriales locales (ChromaDB)
+chroma_rag/
+chroma_db/
+chroma/
+*.sqlite3
+
+# Caché de modelos (HuggingFace)
+.cache/
+huggingface/
+
+# Datos locales / documentos de prueba
+data/
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

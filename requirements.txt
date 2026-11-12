@@ -1,0 +1,22 @@
+# Embeddings (BGE-M3)
+sentence-transformers
+
+# Vector store
+chromadb
+
+# Orquestación / LLM
+langgraph
+langchain-openai
+langchain-core
+langchain-text-splitters
+
+# Carga de documentos
+pypdf
+python-docx
+
+# Utilidades
+python-dotenv
+
+# Notebooks de referencia (opcional)
+ipykernel
+ipython
