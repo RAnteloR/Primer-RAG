@@ -26,9 +26,25 @@ class RAG:
         self.embedder = embedder
         cliente = chromadb.PersistentClient(path=str(config.CHROMA_DIR))
         self.coleccion = cliente.get_collection(config.collection_name(chunk_size, chunk_overlap))
-        self.llm = ChatOpenAI(model=config.LLM_MODEL, api_key=config.API_KEY,
-                              base_url=config.BASE_URL, temperature=config.LLM_TEMPERATURE)
+        self.llm = self._crear_llm(config.LLM_MODEL)
+        self.llm_respaldo = (self._crear_llm(config.LLM_FALLBACK_MODEL)
+                             if config.LLM_FALLBACK_MODEL else None)
         self.grafo = self._montar()
+
+    @staticmethod
+    def _crear_llm(modelo: str) -> ChatOpenAI:
+        return ChatOpenAI(model=modelo, api_key=config.API_KEY, base_url=config.BASE_URL,
+                          temperature=config.LLM_TEMPERATURE,
+                          reasoning_effort=config.LLM_REASONING_EFFORT,
+                          timeout=config.LLM_TIMEOUT, max_retries=config.LLM_MAX_RETRIES)
+
+    def _invocar_llm(self, mensajes):
+        try:
+            return self.llm.invoke(mensajes)
+        except Exception:
+            if self.llm_respaldo is None:
+                raise
+            return self.llm_respaldo.invoke(mensajes)
 
     # --- nodos ---
     def _recuperar(self, estado: Estado) -> dict:
@@ -45,7 +61,7 @@ class RAG:
     def _generar(self, estado: Estado) -> dict:
         contexto = "\n\n".join(f"[{d['id']}] (fuente: {d['fuente']})\n{d['texto']}"
                                for d in estado["documentos"])
-        r = self.llm.invoke([("system", INSTRUCCIONES),
+        r = self._invocar_llm([("system", INSTRUCCIONES),
                              ("human", f"DOCUMENTOS:\n{contexto}\n\nPREGUNTA: {estado['pregunta']}")])
         return {"respuesta": r.content}
 
