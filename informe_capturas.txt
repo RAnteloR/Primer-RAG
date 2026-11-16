@@ -1,0 +1,261 @@
+TAREA RAG 1 - SISTEMA RAG SOBRE COMIDAS TRADICIONALES ESPAÑOLAS
+Informe de capturas explicadas
+
+(Estructura: sigue los apartados del enunciado, en el mismo orden.)
+
+INDICE
+ 0. Resumen
+ 1. Colección de documentos
+ 2. Chunking recursivo y elección de parámetros
+ 3. Vectorización y almacenamiento en ChromaDB
+ 4. Interfaz de chat
+ 5. Consulta a ChromaDB y respuesta con LLM (incluye caso "sin información")
+ 6. Prueba de varios tamaños de chunk y solapamiento
+ 7. Decisiones de eficiencia del código
+ 8. Conclusiones y limitaciones
+ 9. Entregables
+
+
+==================================================
+0. RESUMEN
+==================================================
+
+Se ha construido un sistema RAG sobre una colección de 4 documentos (txt, md, docx, pdf) de comidas tradicionales españolas. Los documentos se dividen con chunking recursivo, se vectorizan con BAAI/bge-m3, se guardan en ChromaDB y se consultan desde un chat tkinter. La respuesta la redacta un LLM de Gemini solo a partir de los fragmentos recuperados; si ningún fragmento es suficientemente relevante, el sistema lo indica sin llamar al LLM.
+
+Se probaron 4 configuraciones de chunk (150/30, 300/50, 900/150 y 2000/300) y se comparó el chat con 3 de ellas (150/30, 300/50 y 2000/300). La configuración elegida es 300/50 (ver apartados 6 y 8).
+
+Flujo:
+
+    docs/ (txt, md, pdf, docx)
+       -> loaders.py + chunking.py   (RecursiveCharacterTextSplitter)
+       -> indexer.py                 (BGE-M3 -> ChromaDB, 1 colección por configuración)
+    pregunta -> vectorizar -> query en ChromaDB (TOP_K=3)
+       -> ¿similitud >= 0,40?  sí: LLM genera respuesta con fuentes
+                               no: "No tengo esa información en los documentos."
+
+
+==================================================
+1. COLECCIÓN DE DOCUMENTOS  (carpeta docs/)
+==================================================
+
+Temática elegida: comidas tradicionales españolas, con foco en la tortilla de patatas. Son documentos cortos y propios, como recomienda el enunciado, para no gastar tokens y facilitar el chunking.
+
+    Archivo                            Formato  Contenido
+    tortilla_receta.txt                txt      Receta, tiempos y conservación
+    tortilla_historia.md               md       Orígenes y leyendas
+    tortilla_variantes.docx            docx     Debate de la cebolla y variantes
+    comidas_tradicionales_espana.pdf   pdf      Paella, gazpacho, cocido, pulpo a feira, croquetas
+
+Lectura de cada formato (rag/loaders.py): txt y md con lectura de texto (con respaldo a cp1252), pdf con pypdf (un documento por página, guardando el número de página como metadato) y docx con python-docx (párrafos y tablas).
+
+
+==================================================
+2. CHUNKING RECURSIVO Y ELECCIÓN DE PARÁMETROS
+==================================================
+
+Implementación (rag/chunking.py): RecursiveCharacterTextSplitter de LangChain con
+    separators = ["\n\n", "\n", ". ", " ", ""]
+    chunk_size y chunk_overlap configurables por línea de comandos
+    add_start_index = True
+A cada chunk se le asigna un id legible: <documento>[:p<página>]:c<n>, por ejemplo tortilla_receta:c14 o comidas_tradicionales_espana:p1:c1, que el LLM cita en la respuesta.
+
+Justificación de los parámetros según el estilo de los documentos:
+- Los documentos son cortos (1-2,5 KB de texto) y están escritos en párrafos breves de una o dos ideas. Un chunk de unos 300 caracteres suele equivaler a una idea completa.
+- El orden de separadores prioriza cortar por párrafo, luego por línea y luego por frase (". "), antes de cortar por palabra. Así los chunks respetan el sentido.
+- El solapamiento se fija en torno al 15-17 % del tamaño (30/150, 50/300, 150/900, 300/2000) para que una información que cae en el borde de un chunk aparezca entera en el siguiente.
+- Un chunk de 900 caracteres equivale a unos 200-250 tokens, muy por debajo del límite de 512 tokens configurado para el modelo de embeddings.
+- Se valida que chunk_overlap < chunk_size para evitar configuraciones inválidas.
+
+
+==================================================
+3. VECTORIZACIÓN Y ALMACENAMIENTO EN CHROMADB
+==================================================
+
+Implementación (rag/indexer.py):
+- Modelo: BAAI/bge-m3 (multilingüe, 1024 dimensiones). Se eligió por funcionar bien en español y no necesitar prefijos de consulta.
+- Los embeddings se normalizan (normalize_embeddings=True) y la colección usa distancia coseno ("hnsw:space": "cosine"). La similitud mostrada es 1 - distancia.
+- Cada configuración se guarda en su propia colección: docs_cs<size>_ov<overlap>. Si ya existe, se borra y se recrea para no duplicar chunks.
+- Cada chunk se guarda con su texto, su embedding y sus metadatos (source, doc_key, start_index y page si es PDF).
+
+CAPTURA 1 - Indexación con varios tamaños
+Archivo: capturas/Captura de pantalla 2026-11-16 203549.png
+
+Comandos ejecutados:
+    python -m rag.indexer --chunk-size 150  --overlap 30
+    python -m rag.indexer --chunk-size 300  --overlap 50
+    python -m rag.indexer --chunk-size 900  --overlap 150
+    python -m rag.indexer --chunk-size 2000 --overlap 300
+
+Explicación: se indexan los mismos 4 documentos con cuatro configuraciones. La salida muestra archivos -> documentos/páginas -> chunks, y la colección creada. El número de chunks baja al subir el tamaño:
+
+    Configuración   Colección           Chunks
+    150 / 30        docs_cs150_ov30        58
+    300 / 50        docs_cs300_ov50        26
+    900 / 150       docs_cs900_ov150        9
+    2000 / 300      docs_cs2000_ov300       4
+
+Con 2000/300 queda un solo chunk por documento, porque los documentos son más cortos que el tamaño de chunk.
+
+
+==================================================
+4. INTERFAZ DE CHAT
+==================================================
+
+Implementación (main.py y rag/chat_ui.py): ventana tkinter con área de conversación, campo de texto y botón Enviar (también con la tecla Enter), que permite preguntar en bucle sin reiniciar. El título de la ventana indica el tamaño y solapamiento de chunk en uso. Se muestra la respuesta, y debajo las fuentes (documento, página en PDF y similitud).
+
+La carga del modelo de embeddings y las consultas se ejecutan en hilos separados, para que la ventana no se congele; la ventana avisa con "Listo. Haz tu pregunta sobre los documentos." cuando está preparada.
+
+
+==================================================
+5. CONSULTA A CHROMADB Y RESPUESTA CON LLM
+==================================================
+
+Implementación (rag/pipeline.py), como grafo LangGraph con tres nodos:
+    recuperar -> generar        (si hay chunks relevantes)
+    recuperar -> sin_info       (si no los hay)
+1. recuperar: vectoriza la pregunta con el mismo modelo, consulta ChromaDB (TOP_K = 3) y descarta los chunks con similitud < 0,40 (MIN_SIMILARITY).
+2. generar: envía al LLM los chunks recuperados y la pregunta, con la instrucción de responder SOLO con esos documentos, citar el id del chunk y responder en el idioma de la pregunta.
+3. sin_info: devuelve "No tengo esa información en los documentos." sin llamar al LLM.
+LLM: gemini-3.6-flash por la API compatible con OpenAI de Gemini, temperature = 0, con reintentos y modelo de respaldo gemini-2.5-flash. Para usar otro proveedor (p. ej. Ollama) basta cambiar BASE_URL y LLM_MODEL en rag/config.py.
+
+CAPTURA 2 - Chat con chunk 300 / overlap 50 (5 preguntas)
+Archivo: capturas/Captura de pantalla 2026-11-16 203933.png
+
+Se hacen 5 preguntas: una por cada formato y una fuera de tema.
+
+1) "¿Cuánto tiempo se fríen las patatas?"
+   Responde "unos 20 minutos a fuego medio-bajo" citando tortilla_receta.txt (similitudes 0,72 / 0,67 / 0,60). Formato: TXT.
+
+2) "¿Dónde y cuándo se cree que se originó la tortilla?"
+   Responde que el origen es incierto, menciona la leyenda del general Zumalacárregui durante el sitio de Bilbao (1835-1836) y la primera referencia escrita (siglos XVIII-XIX). Fuente: tortilla_historia.md (0,68 / 0,64 / 0,62). Formato: MD.
+
+3) "¿Con cebolla o sin cebolla?"
+   Resume el debate: defensores de la cebolla (dulzor, jugosidad, 60 % de preferencia en una encuesta en bares de Madrid) y partidarios de la receta sin cebolla. Fuente: tortilla_variantes.docx (0,77 / 0,67 / 0,55). Formato: DOCX.
+
+4) "¿Qué lleva el gazpacho?"
+   Responde tomate, pepino, pimiento, ajo, aceite de oliva, vinagre y pan. Fuente: comidas_tradicionales_espana.pdf, pág. 1 (0,53 / 0,41). Formato: PDF, con la página indicada.
+
+5) "¿Cuál es la capital de Australia?"   <-- CASO SIN INFORMACIÓN
+   Responde "No tengo esa información en los documentos." y no muestra fuentes. Ningún chunk superó el umbral de similitud (0,40), así que no se llamó al LLM. Demuestra que el sistema detecta cuándo la información no está documentada.
+
+Conclusión de la captura: el sistema recupera el chunk correcto en los 4 formatos, cita los ids de los chunks y las fuentes con su similitud, y rechaza la pregunta fuera de tema.
+
+
+==================================================
+6. PRUEBA DE VARIOS TAMAÑOS DE CHUNK Y SOLAPAMIENTO
+==================================================
+
+Se compara el comportamiento del chat con 150/30, 300/50 (captura 2) y 2000/300, con las mismas preguntas (patatas, cebolla y gazpacho). La configuración 900/150 se indexó (captura 1) pero no se comparó en el chat.
+
+CAPTURA 3 - Chunk 150 / overlap 30
+Archivo: capturas/Captura de pantalla 2026-11-16 204411.png
+
+- Patatas: respuesta correcta (20 minutos), similitudes 0,71 / 0,70 / 0,60, las tres de tortilla_receta.txt.
+- Cebolla: respuesta correcta pero construida con fragmentos muy pequeños (ids c48 y c50 del docx). Similitudes 0,77 / 0,63 / 0,61. Pierde parte del contexto del debate que sí aparecía con 300 (por ejemplo, la frase introductoria de que es "el gran debate de la gastronomía española").
+- Gazpacho: el primer chunk acierta (PDF, 0,58), pero el tercer resultado es de tortilla_historia.md (0,49), un fragmento sin relación con la pregunta. Con chunks tan pequeños, un fragmento corto puede parecerse a la pregunta por casualidad.
+Conclusión: chunks muy precisos pero con poco contexto; mayor riesgo de fragmentos incompletos y de resultados irrelevantes mezclados.
+
+CAPTURA 4 - Chunk 2000 / overlap 300
+Archivo: capturas/Captura de pantalla 2026-11-16 204811.png
+
+- Patatas: respuesta correcta, pero la similitud baja a 0,62 y se recuperan documentos irrelevantes (tortilla_historia.md 0,53 y el PDF 0,44). Cada chunk es un documento entero y su vector mezcla muchos temas.
+- Cebolla: respuesta correcta y completa, pero la mejor similitud (0,72) es menor que con 300 (0,77), y se cuela información del txt ("en la receta de tortilla la cebolla figura como opcional") al traer documentos enteros.
+- Gazpacho: solo recupera un chunk con similitud 0,49, bastante cerca del umbral de 0,40. Con una pregunta algo más ambigua podría descartarse por error.
+- Las citas apuntan a documentos completos (c0, c2, c3), por lo que son mucho menos precisas.
+Conclusión: con chunks grandes la similitud es más baja, se recuperan documentos irrelevantes y la cita de la fuente es poco precisa. Además se envía más texto al LLM, lo que cuesta más tokens.
+
+TABLA COMPARATIVA (mejor similitud obtenida en cada pregunta)
+
+    Pregunta    150/30   300/50   2000/300
+    Patatas     0,71     0,72     0,62
+    Cebolla     0,77     0,77     0,72
+    Gazpacho    0,58     0,53     0,49
+
+    Aspecto                      150/30            300/50            2000/300
+    Nº de chunks                 58                26                4
+    Precisión de la cita         muy alta          alta              baja (documento entero)
+    Contexto por chunk           escaso            suficiente        excesivo
+    Resultados irrelevantes      sí (gazpacho)     no                sí (patatas, cebolla)
+    Similitud                    alta              alta              más baja
+    Texto enviado al LLM         poco              poco              mucho (más tokens)
+
+Nota sobre el gazpacho: 150/30 puntúa más alto (0,58 frente a 0,53) pero mezcla un 3.er resultado irrelevante; por eso la similitud sola no basta para elegir y se tiene en cuenta también la relevancia de todos los chunks recuperados.
+
+CAPTURA 5 - Evaluación cuantitativa de la recuperación (evaluar.py)
+Archivo: (captura de la terminal con la salida de: python evaluar.py)
+
+Como las pruebas del chat son pocas, se escribió evaluar.py para medir la recuperación de forma sistemática y sin gastar tokens (no llama al LLM). Se lanzan 13 preguntas con respuesta conocida y 4 preguntas fuera de tema contra cada configuración (consulta por lotes a ChromaDB, TOP_K = 3, umbral 0,40). Una pregunta "acierta" si alguno de los chunks recuperados contiene la frase clave que la responde (por ejemplo "unos 20 minutos"), criterio que no depende del tamaño de chunk. Además de variar el tamaño con solapamiento proporcional, se prueba el solapamiento de forma independiente con tamaño fijo 300 (overlap 0, 50 y 100).
+
+Métricas: Hit@1 y Hit@3 (la respuesta está en el chunk 1 / en alguno de los 3), MRR (posición del primer chunk correcto), Prec@3 (fracción de los 3 chunks que contienen la respuesta; el resto es ruido), Sim@1 (similitud media del mejor chunk), Aceptadas (preguntas con respuesta que superan el umbral) y Rechazadas (preguntas fuera de tema bajo el umbral).
+
+Resultados:
+
+    size/ovl  chunks  Hit@1  Hit@3   MRR  Prec@3  Sim@1  Acept.  Rechaz.  MaxSimFuera
+    150/30        58   0,77   0,85  0,81    0,31   0,69   13/13      3/4         0,42
+    300/50        26   0,92   1,00  0,96    0,38   0,66   13/13      4/4         0,32
+    900/150        9   0,85   1,00  0,92    0,41   0,60   13/13      4/4         0,29
+    2000/300       4   1,00   1,00  1,00    0,33   0,57   13/13      4/4         0,27
+    300/0         26   0,92   1,00  0,96    0,38   0,66   13/13      4/4         0,32
+    300/100       26   0,92   1,00  0,96    0,36   0,67   13/13      4/4         0,32
+
+Análisis:
+- 150/30 es la peor: Hit@3 = 0,85, es decir, en 2 de 13 preguntas ninguno de los 3 chunks contiene la respuesta, porque la frase queda cortada entre chunks pequeños. Además es la única configuración que deja pasar una pregunta fuera de tema (similitud máxima 0,42 > 0,40), con lo que un chunk corto sin sentido puede parecerse por casualidad a una pregunta ajena.
+- 300/50 y 900/150 recuperan la respuesta en el top-3 en todas las preguntas (Hit@3 = 1,00); 300/50 tiene mejor Hit@1 (0,92 frente a 0,85), MRR (0,96 frente a 0,92) y similitud media (0,66 frente a 0,60).
+- 2000/300 saca Hit@1 = 1,00, pero es un resultado engañoso: con solo 4 chunks (un documento entero cada uno), la respuesta está casi siempre en el chunk del documento correcto, aunque el chunk contenga mucho texto irrelevante. Lo confirman su Sim@1, la más baja (0,57), y los chunks enormes que se envían al LLM. Esta métrica no mide la precisión de la cita, que es peor.
+- El umbral de 0,40 funciona: las preguntas con respuesta se aceptan siempre (13/13) y las de fuera de tema se rechazan en 4/4 salvo el caso de 150/30. La mayor similitud de una pregunta fuera de tema es 0,27-0,32 (0,42 en 150/30), por debajo del umbral de 0,40, mientras que las 13 preguntas con respuesta lo superan.
+- Solapamiento (tamaño fijo 300): con overlap 0, 50 y 100 las métricas son prácticamente idénticas y el número de chunks no cambia (26). La razón es que los documentos están formados por párrafos más cortos que el tamaño del chunk, así que el divisor corta por separadores de párrafo ("\n\n", "\n") y casi nunca llega a usar el solapamiento. El solapamiento solo importaría en documentos con párrafos largos. Se mantiene 50 como valor de seguridad.
+
+
+==================================================
+7. DECISIONES DE EFICIENCIA DEL CÓDIGO
+==================================================
+
+- Vectorización por lotes: embedder.encode(textos, batch_size=16) procesa todos los chunks de una vez en lugar de uno a uno; devuelve un array de numpy.
+- Embeddings normalizados (normalize_embeddings=True): la similitud coseno se calcula como producto escalar, sin normalizar después.
+- Longitud máxima de secuencia limitada a 512 tokens (EMBEDDING_MAX_SEQ_LENGTH): los chunks caben de sobra y se ahorra RAM y tiempo en CPU.
+- Inserción en ChromaDB por lotes de 1.000 (col.add con listas) en vez de una inserción por chunk.
+- El modelo de embeddings se carga una sola vez y se reutiliza para todas las preguntas del chat; no se reindexa al preguntar.
+- Una colección por configuración: permite comparar tamaños sin recalcular los embeddings de las demás.
+- evaluar.py vectoriza todas las preguntas en una sola llamada y consulta ChromaDB por lotes (una query para las 13 preguntas), calcula las métricas con arrays de numpy y no llama al LLM, por lo que no gasta tokens.
+- Evitar llamadas innecesarias al LLM: si ningún chunk supera el umbral, se responde directamente sin consumir tokens ni tiempo de red.
+- TOP_K = 3 limita el contexto enviado al LLM; temperature = 0 y reasoning_effort = "low" reducen tiempo y variabilidad.
+- Robustez de la llamada al LLM: timeout de 45 s, hasta 3 reintentos y modelo de respaldo.
+- La interfaz usa hilos para no bloquear la ventana durante la carga y las consultas.
+
+
+==================================================
+8. CONCLUSIONES Y LIMITACIONES
+==================================================
+
+Conclusiones
+1. El sistema cumple el flujo completo pedido: chunking recursivo, vectorización en ChromaDB, chat en bucle, consulta vectorial y respuesta generada con LLM, con fuentes citadas (capturas 2 a 4).
+2. Recupera el fragmento correcto en los 4 formatos de documento (txt, md, docx y pdf) y cita el documento y la página.
+3. Detecta correctamente la pregunta sin información documentada (capital de Australia) mediante el umbral de similitud de 0,40, sin llamar al LLM (captura 2).
+4. El tamaño del chunk afecta claramente a la calidad (apartado 6). Con 2000/300 las similitudes bajan (0,62 en patatas frente a 0,72 con 300; Sim@1 media 0,57 frente a 0,66), se recuperan documentos no relacionados y las citas son imprecisas. Con 150/30 la recuperación empeora de forma medible (Hit@3 = 0,85, 2 de 13 preguntas sin la respuesta en el top-3) y es la única que deja pasar una pregunta fuera de tema.
+5. Para estos documentos se elige 300/50: es la configuración con mejor equilibrio en la evaluación (Hit@3 = 1,00, Hit@1 = 0,92, MRR = 0,96, 4/4 preguntas fuera de tema rechazadas) con chunks pequeños que dan citas precisas y poco texto al LLM. 2000/300 tiene Hit@1 = 1,00, pero es un efecto de que cada chunk es un documento entero, no una mejor recuperación.
+6. El solapamiento (0, 50 o 100) apenas influye en estos documentos, porque sus párrafos son más cortos que el chunk y el divisor corta por párrafos. Con documentos de párrafos largos sí sería relevante; el valor por defecto del proyecto es 900/150.
+7. El umbral de similitud de 0,40 separa bien las preguntas con respuesta de las que no (apartado 6, captura 5), con margen en las configuraciones 300 y superiores.
+
+Limitaciones
+- La evaluación usa 13 preguntas con respuesta y 4 fuera de tema sobre 4 documentos cortos, escritas por mí a partir de los propios documentos. Las diferencias entre 300/50 y 900/150 (una pregunta de diferencia en Hit@1) no son estadísticamente concluyentes; las diferencias grandes (150/30 frente al resto) sí son claras.
+- Los criterios de acierto se basan en que el chunk contenga una frase clave; con chunks de 2000 caracteres este criterio favorece al chunk grande (ver análisis de la captura 5). La calidad de la respuesta final del LLM solo se comprobó de forma cualitativa en el chat (capturas 2 a 4), con pocas preguntas.
+- La configuración 900/150 se evaluó en la recuperación (captura 5) pero no se probó en el chat.
+- El umbral de 0,40 se ajustó de forma empírica: en el gazpacho el segundo chunk obtuvo 0,41 con 300/50 y el único con 2000/300 obtuvo 0,49, ambos cerca del límite, y con 150/30 una pregunta fuera de tema llegó a 0,42. Un umbral más alto descartaría respuestas válidas; uno más bajo dejaría pasar preguntas fuera de tema. Depende del modelo de embeddings y de los documentos.
+- No hay memoria de conversación: cada pregunta es independiente.
+- No se usa reordenación (reranking) ni búsqueda híbrida; solo similitud vectorial.
+- Algunos datos de los documentos son ilustrativos y no están contrastados con fuentes.
+- La respuesta del LLM puede variar entre ejecuciones y depende de la disponibilidad del modelo de Gemini (por ello el modelo de respaldo).
+- No se probó con Ollama; el sistema funciona directamente con Gemini, aunque cambiar de proveedor solo requiere modificar rag/config.py.
+
+
+==================================================
+9. ENTREGABLES
+==================================================
+
+- main.py y carpeta rag/ (config, loaders, chunking, indexer, pipeline, chat_ui)
+- evaluar.py (evaluación de la recuperación con varias configuraciones)
+- docs/ (colección de documentos en 4 formatos)
+- rag_bge_m3.ipynb y rag_bge_m3_chunking.ipynb (notebooks de referencia)
+- requirements.txt y README.md
+- Este informe con las capturas (PDF)
+- No se incluyen .env (clave de API), .venv ni chroma_rag (se regeneran con python -m rag.indexer)
