@@ -259,3 +259,17 @@ Limitaciones
 - requirements.txt y README.md
 - Este informe con las capturas (PDF)
 - No se incluyen .env (clave de API), .venv ni chroma_rag (se regeneran con python -m rag.indexer)
+
+
+==================================================
+10. USO DE HERRAMIENTAS DE IA EN EL TRABAJO
+==================================================
+
+El código se ha elaborado a partir de los cuadernos y apuntes del profesor (rag_bge_m3.ipynb y rag_bge_m3_chunking.ipynb), como indica el enunciado, adaptándolos a la colección de documentos propia.
+
+Como herramienta de apoyo se utilizó Claude (Anthropic, mediante Claude Code), principalmente para:
+- Corregir errores del código durante el desarrollo.
+- Revisar el proyecto frente al enunciado y la rúbrica.
+- Escribir el script de evaluación evaluar.py y ayudar a redactar y estructurar este informe a partir de los resultados reales.
+
+Las ejecuciones, las capturas de pantalla y la comprobación de los resultados las realicé yo; las tablas del informe proceden de ejecuciones reales del código.
