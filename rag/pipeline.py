@@ -1,8 +1,10 @@
 """RAG como grafo LangGraph: recuperar -> (generar | sin_info)."""
+import time
+from types import SimpleNamespace
 from typing import TypedDict
 
 import chromadb
-from langchain_openai import ChatOpenAI
+import requests
 from langgraph.graph import END, START, StateGraph
 
 from . import config
@@ -13,6 +15,32 @@ INSTRUCCIONES = f"""Eres un asistente que responde preguntas usando ÚNICAMENTE 
 - Si la respuesta no está en los documentos, di: "{NO_INFO}"
 - Indica entre corchetes el id del documento que usas, por ejemplo [apuntes:p3:c12].
 - Responde en el mismo idioma de la pregunta, de forma breve."""
+
+
+class GeminiLLM:
+    """Cliente mínimo de la API nativa de Gemini (generateContent)."""
+
+    def __init__(self, modelo: str):
+        self.modelo = modelo
+        self.url = f"{config.BASE_URL}/v1beta/models/{modelo}:generateContent"
+
+    def invoke(self, mensajes):
+        sistema = "\n".join(t for r, t in mensajes if r == "system")
+        cuerpo = {"contents": [{"role": "user", "parts": [{"text": t}]}
+                               for r, t in mensajes if r != "system"],
+                  "generationConfig": {"temperature": config.LLM_TEMPERATURE}}
+        if sistema:
+            cuerpo["systemInstruction"] = {"parts": [{"text": sistema}]}
+        for intento in range(config.LLM_MAX_RETRIES + 1):
+            r = requests.post(self.url, json=cuerpo, timeout=config.LLM_TIMEOUT,
+                              headers={"x-goog-api-key": config.API_KEY})
+            if r.status_code in (429, 500, 503) and intento < config.LLM_MAX_RETRIES:
+                time.sleep(2 ** intento)
+                continue
+            if not r.ok:
+                raise RuntimeError(f"{self.modelo}: HTTP {r.status_code} {r.text[:300]}")
+            partes = r.json()["candidates"][0]["content"]["parts"]
+            return SimpleNamespace(content="".join(p.get("text", "") for p in partes))
 
 
 class Estado(TypedDict):
@@ -32,11 +60,8 @@ class RAG:
         self.grafo = self._montar()
 
     @staticmethod
-    def _crear_llm(modelo: str) -> ChatOpenAI:
-        return ChatOpenAI(model=modelo, api_key=config.API_KEY, base_url=config.BASE_URL,
-                          temperature=config.LLM_TEMPERATURE,
-                          reasoning_effort=config.LLM_REASONING_EFFORT,
-                          timeout=config.LLM_TIMEOUT, max_retries=config.LLM_MAX_RETRIES)
+    def _crear_llm(modelo: str) -> GeminiLLM:
+        return GeminiLLM(modelo)
 
     def _invocar_llm(self, mensajes):
         try:

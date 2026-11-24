@@ -61,10 +61,10 @@ Copia la plantilla y rellena tu clave de Gemini:
 
 ```bash
 cp .env.example .env
-# edita .env:  GOOGLE_API_KEY=tu_clave
+# edita .env:  GOOGLE_API_KEY=tu_clave  y  GOOGLE_GEMINI_BASE_URL=http://tu_dominio:8338/google
 ```
 
-El LLM se consume por la API compatible con OpenAI de Gemini. Para usar otro proveedor (por ejemplo Ollama) cambia `BASE_URL` y `LLM_MODEL` en `rag/config.py`.
+El LLM se consume por la API nativa de Gemini (`generateContent`) en `GOOGLE_GEMINI_BASE_URL`. Se usa únicamente `gemini-3.5-flash-lite`.
 
 ## Uso
 
@@ -110,7 +110,7 @@ Los documentos son cortos, por lo que con tamaños grandes cada documento puede 
 | `EMBEDDING_MAX_SEQ_LENGTH` | 512 | Límite de tokens al vectorizar (ahorra RAM en CPU) |
 | `TOP_K` | 3 | Chunks que se pasan al LLM |
 | `MIN_SIMILARITY` | 0.40 | Por debajo, se considera que no hay información relevante |
-| `LLM_MODEL` | `gemini-3.6-flash` | Modelo de generación; ajusta al que tengas disponible |
+| `LLM_MODEL` | `gemini-3.5-flash-lite` | Modelo de generación; ajusta al que tengas disponible |
 
 ## Documentos de ejemplo
 
